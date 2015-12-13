@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!--
+    * Author:         Persmule
+    -->
+    <meta charset="utf-8" />
+    <title>自己搭建递归DNS服务器 | Persmule's Personal Blog</title>
+    <meta name="author" content="Persmule" />
+    <meta name="renderer" content="webkit">
+    <meta name="description" content="Persmule's Blog" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+    <link rel="stylesheet" href="/css/default.css" type="text/css" />
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+    <link rel="alternate" type="application/atom+xml" title="Recent Entries" href="/atom.xml" />
+    <script src="/js/jquery-1.7.1.min.js" type="text/javascript"></script>
+</head>
+<body>
+
+    <div class="home-menu">
+        <div class="home-icon-con">
+            <a class="home-menu-icon" href="/">Persmule</a>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+<style type="text/css">
+    body { background:#e8e8e8; }
+    @media screen and (max-width: 750px){
+        body { background:#fff; }
+    }
+    @media screen and (max-width: 1020px){
+        body { background:#fff; }
+    }
+</style>
+
+<div id="content">
+    <div class="entry">
+        <h1 class="entry-title"><a href="/personal-dns-server" title="自己搭建递归DNS服务器">自己搭建递归DNS服务器</a></h1>
+        <p class="entry-date">2015-12-13</p>
+        <p>一般情况下，当我们连接到一个陌生的网络环境时，我们会委托由DHCP告知的DNS服务器来做域名解析的工作。但在我看来，这样的做法有着很大的安全隐患。</p>
+
+<p>使用他人提供的DNS服务器，意味着你查询得到的结果是服务器管理员想要给你的结果。由于权威DNS的作用就是给原本没有域名的主机赋予域名（详情可查阅<a href="https://zh.wikipedia.org/wiki/%E5%9F%9F%E5%90%8D%E7%B3%BB%E7%BB%9F">维基百科</a>），因此在一般情况下，相信权威DNS的解析结果并不会有什么问题，除非权威DNS的管理员中出了叛徒：-）</p>
+
+<p>然而非权威DNS就不一样了：它们的作用并不是为主机赋予域名，而仅仅是解析由客户端发来的域名，并给出结果。最常见的非权威DNS是递归DNS，它按如下方式工作：</p>
+
+<p>比如你打算向一个递归DNS查询www.xxbank.com的IP地址，而该递归DNS尚未缓存相关的所有地址，则递归DNS首先会向根权威DNS查询负责所有.com域名的权威DNS的地址，然后向该权威DNS（暂名为A）查询负责xxbank.com的下一级权威DNS——B的地址，最后向B查询www.xxbank.com的地址，将得到的地址返回给客户端。可以看到，这是一个<strong>递归</strong>式的过程，我们可以使用BIND附带的DNS调试工具<code>dig</code>以<code>$ dig +trace &lt;domain-name&gt;</code>的命令来观测这一过程。</p>
+
+<p>但有些非权威DNS完全可能将服务器管理员设置的另一个地址返回给你，从而达到一些不可告人的目的。其效果和DNS劫持有几分相似，然而在这种攻击场景中并没有人篡改在网络中传输的DNS数据包，而是你使用的DNS返回的信息本身就是有问题的。</p>
+
+<p>即使你直接使用的非权威DNS没有包藏祸心，权威DNS返回给它的查询结果仍然有可能被篡改。尽管<a href="https://zh.wikipedia.org/wiki/%E5%9F%9F%E5%90%8D%E7%B3%BB%E7%BB%9F%E5%AE%89%E5%85%A8%E6%89%A9%E5%B1%95" title="维基百科">DNSSEC</a>提供了基于数字签名的机制来防止篡改，但我们仍然无法知道我们使用的非权威DNS是否使用了DNSSEC。</p>
+
+<p>安全是不能托付给别人的。以上现实情况都指向一个解决方案：在自己的每一台计算机上搭建一个可以做递归查询的非权威DNS服务器，然后让这台计算机上的DNS客户端只使用它来做DNS查询。</p>
+
+<p>这样的<a href="https://zh.wikipedia.org/wiki/%E8%87%AA%E7%94%B1%E8%BD%AF%E4%BB%B6" title="维基百科">自由软件</a>主要有<a href="https://www.unbound.net/">Unbound</a>和<a href="https://www.isc.org/software/bind">BIND</a>，我使用的是历史最悠久的DNS服务器软件——BIND。</p>
+
+<p>BIND的默认配置就是一个递归DNS服务器，最新版的BIND还自带了DNSSEC的支持。这意味这着你打算解析一个途径的各级权威DNS都部署了DNSSEC的域名（比如台湾地区的域名）时，任何篡改手段都会失去作用，并且只要篡改者无法阻挡真正的查询结果到达，你就总能得到正确的结果。</p>
+
+<p>然而DNSSEC尚未完全普及，实际情况常常是最后一级权威DNS（即最终给出你打算解析的域名对应IP地址的权威DNS）没有DNSSEC支持，这样最顽固的DNS缓存投毒攻击仍然会污染我们的递归DNS服务器的缓存。但如果我们知道某些非权威DNS，向它们查询某些<strong>特定的</strong>被污染域名总能给出正确的结果，我们还可以利用BIND的DNS zone功能（很可惜unbound似乎无此功能），让它遇到这些域名时转到这些防污染DNS上解析。</p>
+
+<p>BIND的主配置文件named.conf一般会用<code>include</code>语句拆分成几个子配置文件分别管理。我们可以增加一个子配置文件专门配置zone，如</p>
+
+<pre><code>include "/etc/bind/named.conf.zones";
+</code></pre>
+
+<p>然后在这个子配置文件中写入转发规则：</p>
+
+<pre><code class="c">zone "domain.example.com" {
+    type forward;    
+    forwarders { ipaddr-of-server0; ipaddr-of-server1;... };
+};
+</code></pre>
+
+<p>当然，子配置文件还可以使用include语句进一步拆分。更高级的用法可以参考BIND的man pages。</p>
+
+<p>这样一来，绝大部分域名仍然倚靠部署在本机的非权威DNS进行带缓存的递归查询，避开了不可信的由他人提供的参数不明的非权威DNS；而少数污染严重的域名则转交给<strong>相应的</strong>防污染DNS解析，这些指向特定防污染DNS的zone可以随发现随添加。综合这两种方法可以抵挡常见的大部分与DNS相关的攻击。</p>
+
+<p>如果你改写了BIND的配置文件，建议使用named-checkconf和named-checkzone检查其语法。需要重新启动BIND使配置生效。注意：这些操作一般都需要root权限。</p>
+
+<p>安装BIND并用dig测试，确认它能正常工作后，在你的dhclient.conf（位置可能与发行版有关）中添加一行：</p>
+
+<pre><code>prepend domain-name-servers 127.0.0.1;
+</code></pre>
+
+<p>或把这些文字前面的注释符号去掉。重新连接网络之后/etc/resolv.conf文件会被更新，机器上的客户端就会根据其中的信息使用监听于本机53端口的DNS服务器做DNS查询，DHCP给出的DNS将被屏蔽掉。</p>
+
+<p>屏蔽DHCP给出的DNS是负责更新resolv.conf的resolvconf程序的默认配置<code>TRUNCATE_NAMESERVER_LIST_AFTER_LOOPBACK_ADDRESS</code>的功能。如果你需要DHCP给出的DNS，可以在/etc/default/resolvconf（位置可能与发行版有关）中将其设置为no来关闭这一保护，但因前文所述理由这样做会有安全隐患，笔者不推荐关闭这一功能。如果需要对付某些公共无线局域网热点的注册流程，可以将DHCP给出的DNS信息手动写入resolv.conf，注册成功后再去掉；笔者也在研究更安全的对付注册流程的方法。当然笔者曾见过某些特别恶劣的公共无线局域网热点，其中不指向DHCP提供的DNS的所有查询都会被屏蔽，遇到这种流氓热点你唯一能做的就是躲着走了。</p>
+
+    </div>
+
+    <div class="sidenav">
+        <iframe width="100%" height="75" class="share_self"  frameborder="0" scrolling="no" src="http://widget.weibo.com/weiboshow/index.php?language=&width=0&height=75&fansRow=2&ptype=1&speed=0&skin=5&isTitle=0&noborder=0&isWeibo=0&isFans=0&uid=1855270953&verifier=375b89d6&dpc=1"></iframe>
+    </div>
+
+    <div class="sidenav">
+        <h2>Blog</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/personal-dns-server">自己搭建递归DNS服务器</a></li>
+        
+            <li><a href="/hello-world">Hello World</a></li>
+        
+        </ul>
+
+        <h2>Opinion</h2>
+        <ul class="artical-list">
+        
+        </ul>
+
+        <h2>Project</h2>
+        <ul class="artical-list">
+        
+        </ul>
+    </div>
+</div>
+
+<script src="/js/post.js" type="text/javascript"></script>
+
+
+    <script type="text/javascript">
+        $(function(){
+            $('.home-follow').click(function(e){
+                e.preventDefault();
+
+                if($('.home-contact').is(':visible')){
+                    $('.home-contact').slideUp(100);
+                }else{
+                    $('.home-contact').slideDown(100);
+                }
+            });
+        })
+    </script>
+</body>
+</html>
