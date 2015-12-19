@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <!--
+    * Author:         Persmule
+    -->
+    <meta charset="utf-8" />
+    <title>搭建Debian软件包缓存，好处多多 | Persmule's Personal Blog</title>
+    <meta name="author" content="Persmule" />
+    <meta name="renderer" content="webkit">
+    <meta name="description" content="Persmule's Blog" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0">
+    <link rel="stylesheet" href="/css/default.css" type="text/css" />
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+    <link rel="alternate" type="application/atom+xml" title="Recent Entries" href="/atom.xml" />
+    <script src="/js/jquery-1.7.1.min.js" type="text/javascript"></script>
+</head>
+<body>
+
+    <div class="home-menu">
+        <div class="home-icon-con">
+            <a class="home-menu-icon" href="/">Persmule</a>
+        </div>
+    </div>
+
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+<style type="text/css">
+    body { background:#e8e8e8; }
+    @media screen and (max-width: 750px){
+        body { background:#fff; }
+    }
+    @media screen and (max-width: 1020px){
+        body { background:#fff; }
+    }
+</style>
+
+<div id="content">
+    <div class="entry">
+        <h1 class="entry-title"><a href="/apt-package-cache" title="搭建Debian软件包缓存，好处多多">搭建Debian软件包缓存，好处多多</a></h1>
+        <p class="entry-date">2015-12-19</p>
+        <p>本人家里有好几台运行<a href="https://www.debian.org">Debian GNU/Linux</a> <a href="https://www.debian.org/releases/testing/">testing</a>的计算机，共处于一个小局域网内。因为Debian testing是滚动更新的，所以我每隔几天就要把它们全部更新一遍。但是一来中国家庭的网速还是说不上很快，每台机器都要从上游软件源的服务器上下载成百上千兆字节的软件包要花不少时间；二来这样操作也给软件源的服务器造成不小的负担。</p>
+
+<p>后来我想起Debian曾开发过一个叫<a href="http://www.camrdale.org/apt-p2p/">apt-p2p</a>的软件，它的设计初衷是缓存已下载的软件包提供给其他同样运行着apt-p2p的peers，作为从软件源下载的补充。那么是否可以用这个软件在局域网内搭建一个Debian软件包缓存呢？</p>
+
+<p>apt-p2p由Python写成，安装好后默认监听于TCP和UDP的9977端口，可通过/etc/apt-p2p/apt-p2p.conf改变其行为。TCP端口同时用于本机apt下载软件包，而UDP端口用于组建在p2p文件共享工具中常见的<a href="https://zh.wikipedia.org/wiki/%E5%88%86%E6%95%A3%E5%BC%8F%E9%9B%9C%E6%B9%8A%E8%A1%A8">DHT</a>网络。只需要在/etc/apt/sources.list文件中软件源的url，例如<code>http://mirror.server/debian/</code>的服务器域名前面插入localhost:9977，即成为<code>http://localhost:9977/mirror.server/debian/</code>，具体从互联网上获取软件包的工作便交给apt-p2p负责了：</p>
+
+<p>当收到来自本机apt的文件下载请求时，apt-p2p会先检测文件是否已经存在于缓存的目录树中，如果已存在，则还要检查是否为最新（通过向软件源服务器发出HEAD请求来实现），如果是，则直接返回缓存的文件，否则从互联网上下载文件供给apt，同时存入缓存并记录其散列值。下载文件会首先尝试从peer处下载，不成再到软件源服务器处下载。缓存下来的文件和散列值可供其他peer使用。可以通过apt-p2p的日志文件/var/log/apt-p2p.log深入观测这一过程。</p>
+
+<p>以下是我安装了apt-p2p的主机<code>mycastle</code>的sources.list:</p>
+
+<pre><code>deb http://localhost:9977/mirrors.ustc.edu.cn/debian/ testing main
+deb-src http://localhost:9977/mirrors.ustc.edu.cn/debian/ testing main
+
+deb http://localhost:9977/mirrors.ustc.edu.cn/debian-security/ testing/updates main
+deb-src http://localhost:9977/mirrors.ustc.edu.cn/debian-security testing/updates main
+
+deb http://localhost:9977/mirrors.ustc.edu.cn/debian/ testing-proposed-updates main
+deb-src http://localhost:9977/mirrors.ustc.edu.cn/debian/ testing-proposed-updates main
+
+deb http://localhost:9977/mirrors.ustc.edu.cn/debian/ unstable main
+deb-src http://localhost:9977/mirrors.ustc.edu.cn/debian/ unstable main
+</code></pre>
+
+<p>然而apt-p2p的缓存只能给本机使用，其他主机若试图直接访问9977端口只会得到404错误。因此还需要在安装apt-p2p的主机上架设一个http反向代理，使得在apt-p2p看来，所有的请求均来自本机。</p>
+
+<p>我使用的反向代理是<a href="http://www.apsis.ch/pound/">Pound</a>，它在安装好后默认是禁用的。在/etc/pound/pound.cfg中配置好服务器后再到/etc/default/pound中启用它，然后使用service启动服务器即可。</p>
+
+<p>我使用的配置如下：</p>
+
+<pre><code>...(keep default)
+ListenHTTP
+    Address 0.0.0.0
+    Port    9978
+
+    ## allow PUT and DELETE also (by default only GET, POST and HEAD)?:
+    xHTTP       0
+
+    Service
+        BackEnd
+            Address 127.0.0.1
+            Port    9977
+        End
+    End
+End
+</code></pre>
+
+<p>监听于9978端口，后台服务器在本机的9977端口。</p>
+
+<p>这样一来，其他主机便也可以通过9978端口使用apt-p2p的缓存了。我的做法是在打算使用缓存的其他主机上将/etc/apt/sources.list移动到/etc/apt/sources.list.d/50_main.list，然后仿照缓存主机的软件源列表建立/etc/apt/sources.list.d/10_apt-p2p-home.list，只是要把url中的<code>localhost:9977</code>换成<code>&lt;hostname-of-cache-server&gt;.local:9978</code>即可，当然最好保持软件源服务器相同。这样apt会优先通过反向代理使用apt-p2p的缓存，当缓存不可用时仍可直接连接软件源服务器获取软件包：</p>
+
+<p>10_apt-p2p-home.list：</p>
+
+<pre><code>deb http://mycastle.local:9978/mirrors.ustc.edu.cn/debian/ testing main
+deb-src http://mycastle.local:9978/mirrors.ustc.edu.cn/debian/ testing main
+
+deb http://mycastle.local:9978/mirrors.ustc.edu.cn/debian-security/ testing/updates main
+deb-src http://mycastle.local:9978/mirrors.ustc.edu.cn/debian-security testing/updates main
+
+deb http://mycastle.local:9978/mirrors.ustc.edu.cn/debian/ testing-proposed-updates main
+deb-src http://mycastle.local:9978/mirrors.ustc.edu.cn/debian/ testing-proposed-updates main
+
+deb http://mycastle.local:9978/mirrors.ustc.edu.cn/debian/ unstable main
+deb-src http://mycastle.local:9978/mirrors.ustc.edu.cn/debian/ unstable main
+</code></pre>
+
+<p>50_main.list：</p>
+
+<pre><code>deb http://mirrors.ustc.edu.cn/debian/ testing main
+deb-src http://mirrors.ustc.edu.cn/debian/ testing main
+
+deb http://mirrors.ustc.edu.cn/debian-security/ testing/updates main
+deb-src http://mirrors.ustc.edu.cn/debian-security testing/updates main
+
+deb http://mirrors.ustc.edu.cn/debian/ testing-proposed-updates main
+deb-src http://mirrors.ustc.edu.cn/debian/ testing-proposed-updates main
+
+deb http://mirrors.ustc.edu.cn/debian/ unstable main
+deb-src http://mirrors.ustc.edu.cn/debian/ unstable main
+</code></pre>
+
+<p>如安装了apt-transport-https，可以将50_main.list中的http换成https。</p>
+
+<p>这种以主机名加“.local”的域名格式是<a href="https://en.wikipedia.org/wiki/Multicast_DNS">mDNS/DNS-SD</a>协议提供的一种在广播域内定位主机和发布服务的方法，主要实现有<a href="http://www.avahi.org/">Avahi</a>和Mac OS X的<a href="http://www.apple.com/support/bonjour/">Bonjour</a>。</p>
+
+<p>这样一来，在局域网内，任何一台主机都优先通过apt-p2p获取软件包，一台更新可以惠及全家；即使短时间内更新多台主机，也只需要向软件源索取一次；而且大规模的数据流动发生在带宽很高的局域网内，更缩短了更新时间，提高了效率。</p>
+
+<p>只是这样一来相当于在非缓存主机上配置了两个软件源，而当这两个软件源重复部分的信息不同步时（如笔记本计算机在局域网外更新了直连软件源服务器的软件包列表），<code>apt-get source</code>是无法使用的，因为apt对源码包的检查更严格。</p>
+
+    </div>
+
+    <div class="sidenav">
+        <iframe width="100%" height="75" class="share_self"  frameborder="0" scrolling="no" src="http://widget.weibo.com/weiboshow/index.php?language=&width=0&height=75&fansRow=2&ptype=1&speed=0&skin=5&isTitle=0&noborder=0&isWeibo=0&isFans=0&uid=1855270953&verifier=375b89d6&dpc=1"></iframe>
+    </div>
+
+    <div class="sidenav">
+        <h2>Blog</h2>
+        <ul class="artical-list">
+        
+            <li><a href="/apt-package-cache">搭建Debian软件包缓存，好处多多</a></li>
+        
+            <li><a href="/personal-dns-server">自己搭建递归DNS服务器</a></li>
+        
+            <li><a href="/hello-world">Hello World</a></li>
+        
+        </ul>
+
+        <h2>Opinion</h2>
+        <ul class="artical-list">
+        
+        </ul>
+
+        <h2>Project</h2>
+        <ul class="artical-list">
+        
+        </ul>
+    </div>
+</div>
+
+<script src="/js/post.js" type="text/javascript"></script>
+
+
+    <script type="text/javascript">
+        $(function(){
+            $('.home-follow').click(function(e){
+                e.preventDefault();
+
+                if($('.home-contact').is(':visible')){
+                    $('.home-contact').slideUp(100);
+                }else{
+                    $('.home-contact').slideDown(100);
+                }
+            });
+        })
+    </script>
+</body>
+</html>
